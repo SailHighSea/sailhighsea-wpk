@@ -577,6 +577,7 @@ static void AddRule(int kind, const wchar_t *id, const wchar_t *label, const wch
     EnterCriticalSection(&g_cs);
     if (FindRuleIdx(kind, id) < 0 && PushRuleLocked(kind, id, label, path)) SaveRulesLocked();
     LeaveCriticalSection(&g_cs);
+    if (g_evKick) SetEvent(g_evKick);
     Log(L"Watch %ls: %ls", kind == K_SVC ? L"service" : L"process", id);
 }
 
@@ -797,7 +798,12 @@ static DWORD WINAPI MonitorThread(LPVOID p)
     HANDLE h[2]; (void)p;
     h[0] = g_evStop; h[1] = g_evKick;
     for (;;) {
-        DWORD r = WaitForMultipleObjects(2, h, FALSE, SCAN_MS);
+        DWORD wait = SCAN_MS; BOOL work;
+        EnterCriticalSection(&g_cs);
+        work = (g_nrules > 0 && MonitorOn()) || g_nonce > 0;
+        LeaveCriticalSection(&g_cs);
+        if (!work) wait = 60000;      /* nothing to watch: sleep until a rule is added, monitoring resumes, or a kill is requested (all of them kick the event) */
+        DWORD r = WaitForMultipleObjects(2, h, FALSE, wait);
         if (r == WAIT_OBJECT_0) break;
         MonitorPass();
     }
@@ -3051,7 +3057,13 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
             if (g_trayOk || ++g_trayTries > 40) KillTimer(h, TIMER_TRAY);
             else { AddTray(); if (g_trayOk) UpdateTray(); }
         }
-        if (w == TIMER_REFRESH && !WindowIdle() && !g_menuOpen) RefreshNow();   /* new processes show up on their own */
+        if (w == TIMER_REFRESH && !WindowIdle() && !g_menuOpen) {                 /* new processes show up on their own */
+            static int skip; DWORD fgPid = 0; HWND fg = GetForegroundWindow();
+            if (fg) GetWindowThreadProcessId(fg, &fgPid);
+            if (fgPid != GetCurrentProcessId() && ++skip < 3) return 0;          /* in the background: refresh only every third tick (6 s) */
+            skip = 0;
+            RefreshNow();
+        }
         return 0;
     case WM_SETTINGCHANGE:
         if (l && wcscmp((LPCWSTR)l, L"ImmersiveColorSet") == 0 && g_theme == 2) ApplyTheme();

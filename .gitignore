@@ -1,0 +1,18 @@
+# Build output
+*.exe
+*.o
+*.obj
+out/
+dist/
+
+# Runtime files created next to the exe
+debug-log*.txt
+process-history*.txt
+settings.ini
+watch-list.txt
+
+# Editors / OS
+.vs/
+.vscode/
+Thumbs.db
+desktop.ini

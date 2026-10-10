@@ -46,11 +46,11 @@ background monitor terminates it again every time it starts.
 - **Monitor.** A background thread checks twice a second. Per item it shows how many times it killed
   it, and *access denied* when Windows protects the target (for example antivirus services).
 - **Process history.** Options > *Process history...* shows every program that started and exited while recording was on, including ones that live only a few milliseconds (they are caught through Windows' own process events, not by polling). Each row has start and end time, how long it ran, name, PID, parent program, command line and path. Filter box, a *Short-lived* switch (under 5 seconds), and *Kill & Watch* to add an entry to the watch list. Recording is off by default (Options > *Record process history*, or the button in the window). Everything is also appended to `process-history.txt` next to the exe. Command lines can contain secrets, so keep that file private. Nothing is recorded while the PC is asleep.
+- **Show-window shortcut.** Options > *Shortcut to show the window...* lets you bind your own keys (for example Ctrl+Alt+K). Press them from anywhere in Windows to bring the window up from the notification area; press them again while it is in front to hide it. Nothing is set by default.
 - **Notifications.** An optional notification-area pop-up when something was killed.
 - **Kill log.** Options > *Kill log...* lists everything killed or stopped this session (time, name, type, result, count, path). Repeats are merged into one row with a count, failures are shown in red, and you can stop watching or copy rows from there.
 - **Pause / resume** monitoring from the toolbar or tray; optionally start paused.
-- **Dark, light or follow Windows**, sharp on high-DPI, notification-area icon (blue = monitoring,
-  grey = paused), start with Windows (elevated scheduled task, no UAC prompt), start minimized.
+- **Dark, light or follow Windows**, sharp on high-DPI, notification-area icon, start with Windows (elevated scheduled task, no UAC prompt), start minimized.
 - **Portable.** Settings and the watch list live next to the `.exe`.
 
 ## Download

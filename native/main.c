@@ -44,7 +44,7 @@ enum { IDC_TOGGLE = 101, IDC_WATCH, IDC_KILL, IDC_ADD, IDC_NOTIFY, IDC_OPTIONS, 
 #define IDC_DLG_1 601
 enum { IDM_REFRESH = 201, IDM_FOLDER, IDM_ABOUT, IDM_OPENLOG, IDM_LOCATION, IDM_COPYNAME,
        IDM_ROW_WATCH, IDM_ROW_UNWATCH, IDM_ROW_KILL };
-enum { IDM_KILLLOG = 250, IDM_HISTORY, IDM_HISTREC };
+enum { IDM_KILLLOG = 250, IDM_HISTORY, IDM_HISTREC, IDM_HOTKEY };
 enum { IDC_LOG_LIST = 701, IDC_LOG_UNWATCH, IDC_LOG_COPY, IDC_LOG_CLEAR };
 enum { IDM_AUTOSTART = 210, IDM_STARTMIN, IDM_CLOSETRAY, IDM_MINTRAY, IDM_ONTOP, IDM_ONLYRUN, IDM_SHOWPROC,
        IDM_SHOWSVC, IDM_AUTOMON, IDM_THEME_DARK = 220, IDM_THEME_LIGHT, IDM_THEME_SYSTEM,
@@ -108,6 +108,9 @@ static int g_svcIcon = -1;
 static HWND g_logWnd;                 /* kill log window, NULL when closed */
 static HWND g_histWnd, g_histList, g_histEdit;   /* process history window */
 static BOOL g_histRec;                /* setting: record process history */
+#define HOTKEY_ID 77
+static UINT g_hkMods, g_hkVk;         /* global shortcut that shows the window (MOD_* flags + virtual key; 0 = none) */
+static void HotkeyText(UINT mods, UINT vk, wchar_t *o, size_t cap);
 static BOOL g_etwRunning;             /* the event trace is live */
 static void LogWndRefresh(void);
 #define COL_BG cBg
@@ -433,7 +436,7 @@ static void LoadSettings(void)
     #define GI(k, d) (GetPrivateProfileIntW(L"s", k, d, g_iniFile) != 0)
     g_notify = GI(L"notify", 1); g_autoMon = GI(L"automon", 1);
     g_startMin = GI(L"startmin", 0); g_closeTray = GI(L"closetray", 1); g_minTray = GI(L"mintray", 0); g_onTop = GI(L"ontop", 0);
-    g_histRec = GI(L"history", 0); g_onlyRun = GI(L"onlyrun", 0); g_showProc = GI(L"showproc", 1); g_showSvc = GI(L"showsvc", 1);
+    g_histRec = GI(L"history", 0); g_hkMods = GetPrivateProfileIntW(L"s", L"hkmods", 0, g_iniFile); g_hkVk = GetPrivateProfileIntW(L"s", L"hkvk", 0, g_iniFile); g_onlyRun = GI(L"onlyrun", 0); g_showProc = GI(L"showproc", 1); g_showSvc = GI(L"showsvc", 1);
     #undef GI
     g_theme = (int)GetPrivateProfileIntW(L"s", L"theme", 2, g_iniFile);
     if (g_theme < 0 || g_theme > 2) g_theme = 2;
@@ -449,6 +452,8 @@ static void SaveSettings(void)
     PB(L"mintray", g_minTray); PB(L"ontop", g_onTop); PB(L"onlyrun", g_onlyRun);
     PB(L"history", g_histRec); PB(L"showproc", g_showProc); PB(L"showsvc", g_showSvc);
     #undef PB
+    swprintf(n, 16, L"%u", g_hkMods); WritePrivateProfileStringW(L"s", L"hkmods", n, g_iniFile);
+    swprintf(n, 16, L"%u", g_hkVk); WritePrivateProfileStringW(L"s", L"hkvk", n, g_iniFile);
     swprintf(n, 16, L"%d", g_theme); WritePrivateProfileStringW(L"s", L"theme", n, g_iniFile);
     swprintf(n, 16, L"%u", g_hl); WritePrivateProfileStringW(L"s", L"hl", n, g_iniFile);
     swprintf(n, 16, L"%u", g_collapsed); WritePrivateProfileStringW(L"s", L"collapsed", n, g_iniFile);
@@ -1747,7 +1752,7 @@ static void AddTray(void)
     ZeroMemory(&g_nid, sizeof g_nid);
     g_nid.cbSize = sizeof g_nid; g_nid.hWnd = g_hwnd; g_nid.uID = 1;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    g_nid.uCallbackMessage = WM_TRAY; g_nid.hIcon = (!MonitorOn() && g_iconSmallOff) ? g_iconSmallOff : g_iconSmall;
+    g_nid.uCallbackMessage = WM_TRAY; g_nid.hIcon = g_iconSmall;
     wcscpy(g_nid.szTip, APP_NAME);
     g_trayOk = Shell_NotifyIconW(NIM_ADD, &g_nid);
     if (!g_trayOk && g_hwnd) SetTimer(g_hwnd, TIMER_TRAY, 3000, NULL);   /* at logon the taskbar may not exist yet */
@@ -1760,7 +1765,7 @@ static void UpdateTray(void)
     if (!g_nid.hWnd) return;
     EnterCriticalSection(&g_cs); n = g_nrules; LeaveCriticalSection(&g_cs);
     swprintf(g_nid.szTip, 128, L"%ls\n%ls - %d watched", APP_NAME, MonitorOn() ? L"Monitoring ON" : L"Monitoring PAUSED", n);
-    g_nid.hIcon = (!MonitorOn() && g_iconSmallOff) ? g_iconSmallOff : g_iconSmall;
+    g_nid.hIcon = g_iconSmall;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     Shell_NotifyIconW(NIM_MODIFY, &g_nid);
 }
@@ -1933,6 +1938,8 @@ static HMENU BuildOptionsMenu(void)
     AppendMenuW(m, MF_STRING | (g_closeTray ? MF_CHECKED : 0), IDM_CLOSETRAY, L"Close button hides to notification area");
     AppendMenuW(m, MF_STRING | (g_minTray ? MF_CHECKED : 0), IDM_MINTRAY, L"Minimize to notification area");
     AppendMenuW(m, MF_STRING | (g_onTop ? MF_CHECKED : 0), IDM_ONTOP, L"Always on top");
+    { wchar_t hk[120], key[80]; if (g_hkVk) { HotkeyText(g_hkMods, g_hkVk, key, 80); swprintf(hk, 120, L"Shortcut to show the window: %ls...", key); } else wcscpy(hk, L"Shortcut to show the window: none...");
+      AppendMenuW(m, MF_STRING, IDM_HOTKEY, hk); }
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(th, MF_STRING | (g_theme == 0 ? MF_CHECKED : 0), IDM_THEME_DARK, L"Dark");
     AppendMenuW(th, MF_STRING | (g_theme == 1 ? MF_CHECKED : 0), IDM_THEME_LIGHT, L"Light");
@@ -2749,6 +2756,161 @@ static void ShowHistory(void)
     ShowWindow(g_histWnd, SW_SHOW);
 }
 
+/* ---------- global shortcut that shows the window ---------- */
+enum { IDC_K_SAVE = 721, IDC_K_CLEAR, IDC_K_CANCEL };
+static HWND g_hkWnd, g_hkBSave, g_hkBClear, g_hkBCancel;
+static UINT g_hkCandMods, g_hkCandVk;                    /* what the dialog is showing right now */
+
+static void HotkeyText(UINT mods, UINT vk, wchar_t *o, size_t cap)
+{
+    o[0] = 0;
+    if (mods & MOD_CONTROL) wcsncat(o, L"Ctrl+", cap - wcslen(o) - 1);
+    if (mods & MOD_ALT) wcsncat(o, L"Alt+", cap - wcslen(o) - 1);
+    if (mods & MOD_SHIFT) wcsncat(o, L"Shift+", cap - wcslen(o) - 1);
+    if (mods & MOD_WIN) wcsncat(o, L"Win+", cap - wcslen(o) - 1);
+    if (vk) {
+        wchar_t k[40]; LONG lp = (LONG)(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) << 16);
+        if (vk == VK_INSERT || vk == VK_DELETE || vk == VK_HOME || vk == VK_END || vk == VK_PRIOR || vk == VK_NEXT ||
+            vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN || vk == VK_NUMLOCK || vk == VK_DIVIDE) lp |= 1L << 24;
+        if (GetKeyNameTextW(lp, k, 40) <= 0) swprintf(k, 40, L"Key %u", vk);
+        wcsncat(o, k, cap - wcslen(o) - 1);
+    }
+}
+
+/* Register the shortcut (or remove it when vk is 0). FALSE = another program already uses it. */
+static BOOL HotkeyApply(UINT mods, UINT vk)
+{
+    UnregisterHotKey(g_hwnd, HOTKEY_ID);
+    if (!vk) return TRUE;
+    return RegisterHotKey(g_hwnd, HOTKEY_ID, mods | MOD_NOREPEAT, vk);
+}
+
+static UINT HeldMods(void)
+{
+    UINT m = 0;
+    if (GetKeyState(VK_CONTROL) & 0x8000) m |= MOD_CONTROL;
+    if (GetKeyState(VK_MENU) & 0x8000) m |= MOD_ALT;
+    if (GetKeyState(VK_SHIFT) & 0x8000) m |= MOD_SHIFT;
+    if ((GetKeyState(VK_LWIN) & 0x8000) || (GetKeyState(VK_RWIN) & 0x8000)) m |= MOD_WIN;
+    return m;
+}
+
+static LRESULT CALLBACK HotkeyProc(HWND h, UINT m, WPARAM w, LPARAM l)
+{
+    switch (m) {
+    case WM_CREATE:
+        g_hkWnd = h;
+        g_hkBSave = MakeChild(h, L"BUTTON", L"Save", BS_OWNERDRAW, 0, 0, 10, 10, IDC_K_SAVE);
+        g_hkBClear = MakeChild(h, L"BUTTON", L"Remove shortcut", BS_OWNERDRAW, 0, 0, 10, 10, IDC_K_CLEAR);
+        g_hkBCancel = MakeChild(h, L"BUTTON", L"Cancel", BS_OWNERDRAW, 0, 0, 10, 10, IDC_K_CANCEL);
+        FlatButton(g_hkBSave); FlatButton(g_hkBClear); FlatButton(g_hkBCancel);
+        g_hkCandMods = g_hkMods; g_hkCandVk = g_hkVk;
+        return 0;
+    case WM_SIZE: {
+        RECT rc; UINT dpi = GetDpiForWindow(h);
+        int mg = MulDiv(16, (int)dpi, 96), bh = MulDiv(34, (int)dpi, 96), gap = MulDiv(8, (int)dpi, 96), bw = MulDiv(130, (int)dpi, 96), y, x;
+        GetClientRect(h, &rc);
+        y = rc.bottom - mg - bh; x = rc.right - mg - 3 * bw - 2 * gap;
+        MoveWindow(g_hkBSave, x, y, bw, bh, TRUE); x += bw + gap;
+        MoveWindow(g_hkBClear, x, y, bw, bh, TRUE); x += bw + gap;
+        MoveWindow(g_hkBCancel, x, y, bw, bh, TRUE);
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps); RECT rc, r, box; UINT dpi = GetDpiForWindow(h); wchar_t t[120];
+        HGDIOBJ of; HBRUSH pb = CreateSolidBrush(cPanel); HPEN pen = CreatePen(PS_SOLID, 1, cLine);
+        #define S(v) MulDiv((v), (int)dpi, 96)
+        GetClientRect(h, &rc); FillRect(dc, &rc, g_bgBrush);
+        SetBkMode(dc, TRANSPARENT);
+        of = SelectObject(dc, g_font);
+        SetTextColor(dc, cText);
+        r = rc; r.left = S(16); r.right -= S(16); r.top = S(16); r.bottom = S(44);
+        DrawTextW(dc, L"Press the keys you want to use to show this window:", -1, &r, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
+        box = rc; box.left = S(16); box.right -= S(16); box.top = S(52); box.bottom = S(104);
+        SelectObject(dc, pb); SelectObject(dc, pen);
+        RoundRect(dc, box.left, box.top, box.right, box.bottom, S(10), S(10));
+        SelectObject(dc, g_fontBold ? g_fontBold : g_font);
+        if (g_hkCandVk || g_hkCandMods) { HotkeyText(g_hkCandMods, g_hkCandVk, t, 100); if (!g_hkCandVk) wcscat(t, L"..."); SetTextColor(dc, cText); }
+        else { wcscpy(t, L"(no shortcut set)"); SetTextColor(dc, cDim); }
+        DrawTextW(dc, t, -1, &box, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        SelectObject(dc, g_font);
+        SetTextColor(dc, cDim);
+        r = rc; r.left = S(16); r.right -= S(16); r.top = S(112); r.bottom = S(rc.bottom > 0 ? 150 : 150);
+        DrawTextW(dc, L"Hold Ctrl, Alt, Shift or Win and press a key. It works from anywhere in Windows, even while this program is hidden in the notification area.", -1, &r, DT_WORDBREAK | DT_LEFT);
+        SelectObject(dc, of);
+        DeleteObject(pb); DeleteObject(pen);
+        #undef S
+        EndPaint(h, &ps);
+        return 0;
+    }
+    case WM_KEYDOWN: case WM_SYSKEYDOWN: {
+        UINT vk = (UINT)w, mods = HeldMods();
+        if (vk == VK_ESCAPE && !mods) { DestroyWindow(h); return 0; }
+        if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN) {
+            g_hkCandMods = mods; g_hkCandVk = 0;               /* only modifiers so far */
+        } else if (mods) {
+            g_hkCandMods = mods; g_hkCandVk = vk;
+        }
+        InvalidateRect(h, NULL, FALSE);
+        return 0;
+    }
+    case WM_KEYUP: case WM_SYSKEYUP:
+        return 0;
+    case WM_SYSCOMMAND:
+        if ((w & 0xFFF0) == SC_KEYMENU) return 0;               /* Alt alone must not open a menu */
+        break;
+    case WM_DRAWITEM:
+        if (((DRAWITEMSTRUCT *)l)->CtlType == ODT_BUTTON) { DrawFlatButton((DRAWITEMSTRUCT *)l); return TRUE; }
+        break;
+    case WM_COMMAND:
+        switch (LOWORD(w)) {
+        case IDC_K_SAVE:
+            if (!g_hkCandVk) { ShowDialog(h, APP_NAME, L"Hold Ctrl, Alt, Shift or Win and press a key first.", L"OK", NULL, NULL); }
+            else if (HotkeyApply(g_hkCandMods, g_hkCandVk)) { g_hkMods = g_hkCandMods; g_hkVk = g_hkCandVk; SaveSettings(); DestroyWindow(h); return 0; }
+            else {
+                HotkeyApply(g_hkMods, g_hkVk);                  /* put the old one back */
+                ShowDialog(h, APP_NAME, L"Another program already uses that shortcut. Please try a different one.", L"OK", NULL, NULL);
+            }
+            break;
+        case IDC_K_CLEAR: HotkeyApply(0, 0); g_hkMods = 0; g_hkVk = 0; SaveSettings(); DestroyWindow(h); return 0;
+        case IDC_K_CANCEL: DestroyWindow(h); return 0;
+        }
+        SetFocus(h);                                            /* so the next key press is captured here, not by a button */
+        return 0;
+    case WM_CLOSE:
+        DestroyWindow(h);
+        return 0;
+    case WM_DESTROY:
+        g_hkWnd = NULL;
+        return 0;
+    }
+    return DefWindowProcW(h, m, w, l);
+}
+
+static void ShowHotkeyDialog(void)
+{
+    static BOOL registered; BOOL dark = g_dark; UINT dpi; RECT wr; int pref = 2, W, H;
+    if (g_hkWnd) { SetForegroundWindow(g_hkWnd); return; }
+    if (!registered) {
+        WNDCLASSW wc; ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = HotkeyProc; wc.hInstance = g_inst; wc.hCursor = LoadCursor(NULL, IDC_ARROW); wc.lpszClassName = L"SHSWPKHotkey"; wc.hIcon = g_iconBig;
+        RegisterClassW(&wc); registered = TRUE;
+    }
+    dpi = GetDpiForWindow(g_hwnd); GetWindowRect(g_hwnd, &wr);
+    W = MulDiv(520, (int)dpi, 96); H = MulDiv(290, (int)dpi, 96);
+    g_hkWnd = CreateWindowExW(WS_EX_DLGMODALFRAME, L"SHSWPKHotkey", L"Shortcut to show the window", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+                              wr.left + ((wr.right - wr.left) - W) / 2, wr.top + ((wr.bottom - wr.top) - H) / 2, W, H, g_hwnd, NULL, g_inst, NULL);
+    if (!g_hkWnd) return;
+    DwmSetWindowAttribute(g_hkWnd, 20, &dark, sizeof dark);
+    DwmSetWindowAttribute(g_hkWnd, 33, &pref, sizeof pref);
+    SendMessageW(g_hkWnd, WM_SIZE, 0, 0);
+    ShowWindow(g_hkWnd, SW_SHOW);
+    SetForegroundWindow(g_hkWnd);
+    SetFocus(g_hkWnd);
+}
+
 static void RefreshIcons(UINT dpi)
 {
     int sm = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
@@ -2862,6 +3024,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
         case IDM_REFRESH: RefreshApps(); break;
         case IDM_KILLLOG: ShowKillLog(); break;
         case IDM_HISTORY: ShowHistory(); break;
+        case IDM_HOTKEY: ShowHotkeyDialog(); break;
         case IDM_HISTREC: HistToggleRecording(); break;
         case IDM_FOLDER: ShellExecuteW(h, L"open", g_dataDir, NULL, NULL, SW_SHOWNORMAL); break;
         case IDM_ABOUT: ShowAbout(); break;
@@ -2896,6 +3059,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_ENDSESSION:
         if (w) SaveWindowPos();
         break;
+    case WM_HOTKEY:
+        if (w == HOTKEY_ID) {
+            if (IsWindowVisible(h) && !IsIconic(h) && GetForegroundWindow() == h) ShowWindow(h, SW_HIDE); else ShowMain();
+        }
+        return 0;
     case WM_SHOWME:
         ShowMain();
         return 0;
@@ -2986,6 +3154,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     SetTimer(g_hwnd, TIMER_REFRESH, 2000, NULL);
     if (g_onTop) ApplyOnTop();
     StartMonitorThread();
+    if (g_hkVk && !HotkeyApply(g_hkMods, g_hkVk)) Log(L"Show-window shortcut is already used by another program");
     if (g_histRec) { ULONG hr = StartHistory(); if (hr) { g_histRec = FALSE; SaveSettings(); } }
     if (g_startMin || (cmd && wcsstr(cmd, L"--minimized"))) ShowWindow(g_hwnd, SW_HIDE); else { ShowWindow(g_hwnd, g_wantMax ? SW_SHOWMAXIMIZED : show); g_wantMax = FALSE; }
     UpdateWindow(g_hwnd);
